@@ -3,16 +3,12 @@ import json
 from hexbytes import HexBytes
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from psycopg2.extras import execute_values
-from web3.datastructures import AttributeDict
-from db.connection import get_conn, release_conn
-from utils.web3_client import make_web3
+from utils.helpers import connect_to_rpc
 from utils.logger import logger
+from db.db_operations import Database_Operations
 
-
-BATCH_SIZE = 20
-MAX_WORKERS = 1   # safe value
-
+db_inst = Database_Operations()
+w3 = connect_to_rpc()    # creating an connection with RPC
 
 # -----------------------------------------
 # 2. Binary search block by timestamp
@@ -35,102 +31,30 @@ def find_block_for_timestamp(w3, target_ts):
     return chosen
 
 
-# -----------------------------------------
-# 3. Bulk Insert Helpers
-# -----------------------------------------
-# ---------------------------------------------------------
-# JSON Normalizer (Fix HexBytes, bytes, nested dicts, lists)
-# ---------------------------------------------------------
-def normalize(value):
-    """Recursively convert Web3 objects → JSON-serializable."""
-    if isinstance(value, HexBytes):
-        return value.hex()
-
-    if isinstance(value, bytes):
-        return value.hex()
-
-    # Handle both AttributeDict and regular dict
-    if isinstance(value, (dict, AttributeDict)):
-        return {k: normalize(v) for k, v in value.items()}
-
-    if isinstance(value, list):
-        return [normalize(v) for v in value]
-
-    return value
 
 
-def safe_json(row):
-    """Convert row (list) → JSON-safe tuple for DB insertion."""
-    new_r = []
-    for col in row:
-        # Convert nested dict into JSON
-        if isinstance(col, dict):
-            col = normalize(col)
-            new_r.append(json.dumps(col))
-        else:
-            new_r.append(col)
-    return tuple(new_r)
-
-
-def bulk_insert(query, rows):
-    if not rows:
-        return
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # Convert all rows to JSON-safe form
-    safe_rows = [safe_json(r) for r in rows]
-
-    execute_values(cur, query, safe_rows)
-    conn.commit()
-    release_conn(conn)
-
-
-def insert_blocks(rows):
-    bulk_insert("""
-        INSERT INTO raw_blocks (block_number, block_timestamp, raw_json)
-        VALUES %s ON CONFLICT DO NOTHING;
-    """, rows)
-
-
-def insert_txs(rows):
-    bulk_insert("""
-        INSERT INTO raw_transactions (tx_hash, block_number, raw_json)
-        VALUES %s ON CONFLICT DO NOTHING;
-    """, rows)
-
-
-def insert_receipts(rows):
-    bulk_insert("""
-        INSERT INTO raw_receipts (tx_hash, block_number, raw_json)
-        VALUES %s ON CONFLICT DO NOTHING;
-    """, rows)
-
-
-def insert_logs(rows):
-    bulk_insert("""
-        INSERT INTO raw_logs (tx_hash, block_number, log_index, raw_json)
-        VALUES %s ON CONFLICT DO NOTHING;
-    """, rows)
 
 
 # -----------------------------------------
 # 4. Fetch a single block (full raw ingestion)
 # -----------------------------------------
-def fetch_block(block_number):
+def get_block_data(block_number):
+    """Fucntion to get raw block data 
+
+    Args:
+        block_number (int): block number 
+    Returns:
+        dict: list of values
+    """
     try:
         block = w3.eth.get_block(block_number, full_transactions=True)
-
         block_row = [
             block_number,
             block.timestamp,
             dict(block)
         ]
 
-        tx_rows = []
-        receipt_rows = []
-        log_rows = []
+        tx_rows, receipt_rows, log_rows = [], [], []
 
         for tx in block.transactions:
             tx_hash = tx.hash.hex()
@@ -155,37 +79,52 @@ def fetch_block(block_number):
         }
 
     except Exception as e:
-        print(f"❌ Error fetching block {block_number}: {e}")
-        return None
+        logger.error("Error fetching block %s: %s", block_number, e)
+        return {}
 
 
 # -----------------------------------------
 # 5. Worker Batch Processor
 # -----------------------------------------
 def process_batch(start_block, end_block):
+    """Function to fetch & insert the data for given block range
+
+    Args:
+        start_block (int): start block number
+        end_block (int): end block number
+
+    Returns:
+        bool: returns True if it's succesful else False
+    """
     all_blocks, all_txs, all_receipts, all_logs = [], [], [], []
 
-    for blk in range(start_block, end_block + 1):
-        res = fetch_block(blk)
-        if res:
-            all_blocks.append(res["block"])
-            all_txs.extend(res["tx"])
-            all_receipts.extend(res["receipt"])
-            all_logs.extend(res["logs"])
+    try:
+        for block_number in range(start_block, end_block + 1):
+            data = get_block_data(block_number)
+            if data:
+                all_blocks.append(data["block"])
+                all_txs.extend(data["tx"])
+                all_receipts.extend(data["receipt"])
+                all_logs.extend(data["logs"])
 
-    insert_blocks(all_blocks)
-    insert_txs(all_txs)
-    insert_receipts(all_receipts)
-    insert_logs(all_logs)
+        db_inst.insert_blocks_data(all_blocks)
+        db_inst.insert_txs_data(all_txs)
+        db_inst.insert_receipts_data(all_receipts)
+        db_inst.insert_logs_data(all_logs)
 
-    print(f"✅ Finished {start_block} → {end_block}")
-    return True
+        logger.info("Data for %s → %s stored in DB!!", start_block, end_block)
+        return True
+    except Exception as e:
+        logger.error("Error occured during batch processing -> %s", e)
+        return False
 
 
 if __name__ == "__main__":
-    w3 = make_web3()        # creating an connection with RPC
-    DATE = '2025-11-01'
+    DATE = None
+    BATCH_SIZE = 20     # TODO: batch size for bulk insertion can be increased
+    MAX_WORKERS = 1     # TODO: we can increas in future
     START_BLOCK, END_BLOCK = None, None
+    
     if DATE:
         logger.info("Starting raw block ingestion for %s", DATE)
         # 2025-11-01 to 2025-11-02 (UTC)
@@ -200,16 +139,14 @@ if __name__ == "__main__":
         logger.info("Finding end block…")
         END_BLOCK = find_block_for_timestamp(w3, end_ts)
 
-        logger.info("Block range to process for %s : \t %s to %s", DATE, START_BLOCK, END_BLOCK)
+        logger.info("Block range to process for %s : %s to %s", DATE, START_BLOCK, END_BLOCK)
     else:
         # by default the ingestion module will work o the basis of input start & end block
-        START_BLOCK = 23700768
-        END_BLOCK = 23700770
-        logger.info("Block range to process: \t %s to %s", START_BLOCK, END_BLOCK)
+        START_BLOCK = 23700801
+        END_BLOCK = 23700830
+        logger.info("Block range to process: %s to %s", START_BLOCK, END_BLOCK)
 
-
-    t0 = time.time()
-
+    initial_time = time.time()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = []
         blk = START_BLOCK
@@ -221,5 +158,5 @@ if __name__ == "__main__":
 
         for f in as_completed(futures):
             f.result()
-
-    logger.info("Completed ingestion in %ss!", (time.time() - t0:.2f))
+            
+    logger.info("Completed ingestion in %s s!", (time.time() - initial_time))

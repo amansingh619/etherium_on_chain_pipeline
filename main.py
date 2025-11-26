@@ -1,7 +1,7 @@
 # main_backfill_single_day.py
 
 import datetime
-from utils.web3_client import make_web3
+from utils.connect_to_rpc import make_web3
 from utils.helpers import load_whale_wallets
 from db.connection import SessionLocal
 from ingestion.process_eth import handle_eth_transfers

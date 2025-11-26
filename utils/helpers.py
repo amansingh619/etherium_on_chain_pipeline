@@ -2,6 +2,7 @@ import os
 import json
 from web3 import Web3
 from utils.logger import logger
+from web3.datastructures import AttributeDict
 from pathlib import Path
 
 def to_eth(wei):
@@ -71,3 +72,47 @@ def is_wallet_involved(tx, wallet_set):
     except Exception as e:
         print(f"[WARN] Failed to process transaction {tx.get('hash')}: {e}")
         return []
+
+
+def connect_to_rpc():
+    """ Create and return a Web3 client 
+        using the Alchemy RPC URL.
+    """
+    rpc_url = os.getenv("ALCHEMY_RPC_URL")
+    if not rpc_url:
+        raise ValueError("ALCHEMY_RPC_URL missing in environment")
+
+    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    logger.info("Connected to Alchemy server")
+    if not w3.is_connected():
+        raise ConnectionError("Unable to connect to Ethereum mainnet")
+    return w3
+
+def safe_json(row):
+    """Convert row (list) → JSON-safe tuple for DB insertion."""
+    new_r = []
+    for col in row:
+        # Convert nested dict into JSON
+        if isinstance(col, dict):
+            col = normalize(col)
+            new_r.append(json.dumps(col))
+        else:
+            new_r.append(col)
+    return tuple(new_r)
+
+def normalize(value):
+    """Recursively convert Web3 objects → JSON-serializable."""
+    if isinstance(value, HexBytes):
+        return value.hex()
+
+    if isinstance(value, bytes):
+        return value.hex()
+
+    # Handle both AttributeDict and regular dict
+    if isinstance(value, (dict, AttributeDict)):
+        return {k: normalize(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [normalize(v) for v in value]
+
+    return value
