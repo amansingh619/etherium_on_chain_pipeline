@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project is an **end-to-end on-chain data engineering pipeline** focused on tracking **Ethereum whale wallet activity** (primarily exchange wallets) and converting raw blockchain data into **analytics-ready tables and dashboards**.
+This project is an **end-to-end on-chain data engineering pipeline** focused on tracking **Ethereum wallet activity** and converting raw blockchain data into **analytics-ready tables and dashboards**.
 
 The system is designed to be:
 
@@ -25,13 +25,13 @@ Currently, the pipeline performs **two core functions**:
 
   * Transactions
   * Logs
-  * ERC-20 `Transfer` events
-* Filters data for **whale wallets** (exchange hot/cold wallets)
+  * blocks
+* Filters data
 * Decodes and enriches raw blockchain data
 
 ### 2. Analytics & Visualization
 
-* Stores **raw blockchain data** and **filtered analytical data** in **separate tables**
+* Stores **raw blockchain data** and **filtered data** in **separate tables**
 * Uses **Dune dashboards** for analytics and visualization
 * Offloads heavy querying & visualization to Dune, keeping local infra lightweight
 
@@ -61,7 +61,7 @@ This mirrors how real Web3 data teams work:
 
 ### Storage
 
-* SQLite (local)
+* Postgress (Neon)
 * Structured analytical tables (separate from raw tables)
 
 ### Analytics & Dashboards
@@ -84,8 +84,7 @@ This mirrors how real Web3 data teams work:
 ## Current Capabilities
 
 * Block-level ingestion (batch-based)
-* Whale wallet filtering
-* ERC-20 transfer decoding
+* wallet filtering
 * Clean analytical tables
 * Dune-based dashboards
 
@@ -96,7 +95,6 @@ This mirrors how real Web3 data teams work:
 * Larger block windows (incremental indexing)
 * Real-time / near-real-time streaming
 * Token metadata caching
-* USD value enrichment
 * Alerting for large whale movements
 * Multi-chain support
 
